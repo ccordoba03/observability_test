@@ -8,4 +8,6 @@ Este proyecto implementa una arquitectura de referencia en **AWS EKS** priorizan
 - **Gestión segura de secretos** con **External Secrets Operator**.
 - **Exposición de aplicación demo** vía **AWS Load Balancer Controller**.
 
-## Estructura del repositorio
+##  Flujo git
+
+git flow con dos ambientes release y master 

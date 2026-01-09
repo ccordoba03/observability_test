@@ -1,0 +1,17 @@
+﻿{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::905418343592:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/6BBFD16075510E07C90D62D5D34B2CA9"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.us-east-1.amazonaws.com/id/6BBFD16075510E07C90D62D5D34B2CA9:sub": "system:serviceaccount:observability:grafana-alloy"
+        }
+      }
+    }
+  ]
+}

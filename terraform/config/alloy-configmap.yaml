@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alloy
+  namespace: observability
+data:
+  config.alloy: |
+    prometheus.scrape "kubernetes" {
+      targets = discovery.kubernetes.pods.targets
+      forward_to = [prometheus.remote_write.default.receiver]
+    }
+
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    prometheus.remote_write "default" {
+      endpoint {
+        url = "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-5a054a55-37fc-4b35-b352-6694ec3aed77/api/v1/remote_write"
+      }
+    }

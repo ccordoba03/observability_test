@@ -1,0 +1,38 @@
+# Karpenter Helm Values - IRSA Configuration
+serviceAccount:
+  name: karpenter
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::905418343592:role/KarpenterController-20260107180102207600000001
+
+settings:
+  clusterName: eks-observability
+  clusterEndpoint: https://6BBFD16075510E07C90D62D5D34B2CA9.gr7.us-east-1.eks.amazonaws.com
+  interruptionQueue: Karpenter-eks-observability
+
+controller:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+
+replicas: 2
+
+logLevel: info
+
+# Deshabilitar Pod Identity y usar IRSA tradicional
+podDisruptionBudget:
+  minAvailable: 1
+
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchExpressions:
+        - key: app.kubernetes.io/name
+          operator: In
+          values:
+          - karpenter
+      topologyKey: kubernetes.io/hostname

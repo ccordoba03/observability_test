@@ -184,7 +184,7 @@ Desplegar Grafana Alloy como agente distribuido (DaemonSet) que recolecta métri
 
 ### Integración con AWS
 - **Amazon Managed Prometheus (AMP):** Workspace dedicado en AMP (creado fuera o en Terraform).
-  - Endpoint: `https://aps-workspaces.<region>.amazonaws.com/workspaces/<workspace-id>/api/v1/remote_write`.
+  - Endpoint: `https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-5a054a55-37fc-4b35-b352-6694ec3aed77/api/v1/remote_write`
   - Autenticación: SigV4 (firma con credenciales AWS temporales).
 - **IAM Role (IRSA):** Rol específico para Alloy con permiso `aps:RemoteWrite` al workspace AMP.
 - **VPC Endpoints (opcional):** Si se requiere egress privado a AMP, usar VPC endpoint.

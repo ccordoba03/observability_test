@@ -1,4 +1,6 @@
-# Proyecto: Observabilidad en AWS EKS , documento con apoyo de redaccion con agente IA
+# Proyecto: Observabilidad en AWS EKS.
+
+Link app expuesta:
 
 http://k8s-appdemo-hellowor-7d652ffc17-973624858.us-east-1.elb.amazonaws.com
 
@@ -338,11 +340,6 @@ spec:
           value: "hello-world"
 ```
 
-**Comando:**
-```bash
-terraform -chdir=terraform apply -target=module.alb_controller -target=module.app_demo
-```
-
 ### Componentes en el Cluster (resultado del Hito 4)
 **Namespace:** `app-demo`.
 
@@ -444,11 +441,6 @@ spec:
       property: DB_PASSWORD
 ```
 
-**Comando:**
-```bash
-terraform -chdir=terraform apply -target=module.external_secrets
-```
-
 ### Componentes en el Cluster (resultado del Hito 5)
 **Namespace:** `external-secrets-system`.
 
@@ -488,53 +480,6 @@ terraform -chdir=terraform apply -target=module.external_secrets
 8. `external-secrets-system`
 9. `istio-system` (opcional)
 
-### Pods (por Hito):
-
-| Hito | Pods | Total Pods |
-|------|------|-----------|
-| Hito 1 (EKS base) | coredns (2), aws-node (N), kube-proxy (N) | 2 + 2N |
-| Hito 2 (Karpenter) | karpenter-controller (1), karpenter-webhook (1) | 2 |
-| Hito 3 (Observability) | grafana-alloy (N), kube-state-metrics (1) | N + 1 |
-| Hito 4 (App + ALB) | hello-world (2-3), aws-load-balancer-controller (1) | 3-4 |
-| Hito 5 (Secrets) | external-secrets-controller (1), external-secrets-webhook (1) | 2 |
-| **Total** | | **2 + 4N + 10** |
-
-*Donde N = número de nodos. Ejemplo: si hay 3 nodos:*
-- *DaemonSets: aws-node (3), kube-proxy (3), grafana-alloy (3) = 9 pods.*
-- *Deployments: coredns (2), karpenter (2), kube-state-metrics (1), hello-world (2), alb-controller (1), eso (2) = 10 pods.*
-- **Total: ~19 pods.**
-
-### Nodos (dinámico):
-- **Inicial:** 2-3 nodos (EKS crea automáticamente).
-- **Rango:** 3-10 nodos típicos (Karpenter escala según demanda).
-- **Máximo:** Configurable en Provisioner de Karpenter (ej. `limits.resources.cpu: 1000`).
-
----
-
-## 🚀 Flujo de Despliegue Completo (Orden Recomendado)
-
-```bash
-# 1. Hito 1 — Infraestructura base
-terraform -chdir=terraform init
-terraform -chdir=terraform plan -out=hito1.plan
-terraform -chdir=terraform apply hito1.plan
-
-# 2. Esperar a que EKS esté listo y obtener kubeconfig
-aws eks update-kubeconfig --region us-east-1 --name my-cluster
-
-# 3. Hito 2 — Karpenter
-terraform -chdir=terraform apply -target=module.karpenter
-
-# 4. Hito 3 — Observabilidad
-terraform -chdir=terraform apply -target=module.observability
-
-# 5. Hito 4 — App + ALB
-terraform -chdir=terraform apply -target=module.alb_controller
-terraform -chdir=terraform apply -target=module.app_demo
-
-# 6. Hito 5 — Secretos
-terraform -chdir=terraform apply -target=module.external_secrets
-```
 
 ### Validación post-despliegue:
 ```bash
@@ -578,18 +523,4 @@ terraform/
     ├── app_demo/         # Hello World deployment, service, ingress
     └── external_secrets/ # ESO role, policy, helm, SecretStore
 ```
-
----
-
-## 🔗 Integración Resumen (AWS ↔ EKS ↔ Terraform)
-
-| Hito | AWS | EKS | Terraform |
-|------|-----|-----|-----------|
-| 1 | VPC, Subnets, IGW, NAT, Security Groups, IAM Roles, OIDC Provider | Cluster, aws-auth, kube-system pods | main.tf (network + eks modules) |
-| 2 | EC2 (Karpenter provisiona), IAM Role IRSA | Karpenter NS, Provisioner CRD, karpenter-controller/webhook | karpenter.tf (iam_role + helm_release) |
-| 3 | AMP Workspace, IAM Role IRSA | observability NS, Alloy DaemonSet, kube-state-metrics | observability.tf (iam_role + helm + configmap) |
-| 4 | ALB, Target Groups, Listener, IAM Role IRSA | app-demo NS, Hello World Deployment, Ingress | alb-app-demo.tf (iam_role + helm + k8s manifests) |
-| 5 | Secrets Manager, KMS (optional), IAM Role IRSA | external-secrets-system NS, ESO Controller, SecretStore, ExternalSecret | external-secrets.tf (iam_role + helm + k8s manifests) |
-
----
 

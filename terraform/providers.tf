@@ -44,8 +44,7 @@ provider "aws" {
 }
 
 
-# Data sources for EKS cluster (used by Kubernetes/Helm providers)
-# They reference `module.eks` outputs, which exist in this configuration.
+
 data "aws_eks_cluster" "this" {
   name = module.eks.cluster_name
 }

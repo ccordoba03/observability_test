@@ -52,17 +52,8 @@ module "eks" {
 
   enable_irsa = true
 
-  # Temporary managed node group for Karpenter controller
-  eks_managed_node_groups = {
-    initial = {
-      instance_types = ["t3.medium"]
-      min_size       = 1
-      max_size       = 2
-      desired_size   = 2
-    }
-  }
 
-  # Endpoint seguro: público + privado; público restringido a tu IP/CIDR
+  # Endpoint seguro: público + privado; cidrs restringido a ip local.
   cluster_endpoint_public_access       = true
   cluster_endpoint_private_access      = true
   cluster_endpoint_public_access_cidrs = var.allowed_cidrs
@@ -110,7 +101,7 @@ resource "kubernetes_manifest" "karpenter_nodeclass" {
         { tags = { "kubernetes.io/cluster/${module.eks.cluster_name}" = "owned" } }
       ]
 
-      # ✅ Solo role (NO instanceProfile)
+   
       role = module.karpenter.node_iam_role_name
 
       # Tags EC2 útiles para discovery y gobernanza
@@ -488,20 +479,9 @@ resource "kubernetes_service_account" "alb_sa" {
   }
   depends_on = [module.eks]
 }
-
-
-
-# Secret en AWS Secrets Manager
-resource "aws_secretsmanager_secret" "app_secret" {
-  name = "eks-observability-app-secret"
-  tags = local.tags
-}
-
-resource "aws_secretsmanager_secret_version" "app_secret_version" {
-  secret_id = aws_secretsmanager_secret.app_secret.id
-  secret_string = jsonencode({
-    API_KEY = "my-secret-api-key"
-  })
+## Secret en AWS Secrets Manager 
+data "aws_secretsmanager_secret" "app_secret" {
+  name = var.app_secret_name
 }
 
 # SecretStore
@@ -555,7 +535,7 @@ resource "kubectl_manifest" "app_secret" {
         {
           secretKey = "API_KEY"
           remoteRef = {
-            key = aws_secretsmanager_secret.app_secret.name
+            key = var.app_secret_name
           }
         }
       ]
@@ -608,7 +588,7 @@ resource "aws_iam_role" "app_role" {
           Action = [
             "secretsmanager:GetSecretValue"
           ]
-          Resource = aws_secretsmanager_secret.app_secret.arn
+          Resource = data.aws_secretsmanager_secret.app_secret.arn
         }
       ]
     })

@@ -24,3 +24,9 @@ variable "allowed_cidrs" {
   type        = list(string)
   default     = ["181.53.12.236/32"]
 }
+
+variable "app_secret_name" {
+  description = "Nombre del secreto en AWS Secrets Manager que contiene las credenciales de la app"
+  type        = string
+  default     = "eks-observability-app-secret"
+}

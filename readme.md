@@ -1,5 +1,9 @@
 # Proyecto: Observabilidad en AWS EKS.
 
+10/01/2025/
+Se realiza TF DESTROY para evitar sobrecosto sobre istancias no utilizadas ec2 en aws , se espera redesplegar el 12/01/2025
+
+
 Link app expuesta:
 
 http://k8s-appdemo-hellowor-7d652ffc17-973624858.us-east-1.elb.amazonaws.com

@@ -51,14 +51,40 @@ module "eks" {
   subnet_ids = module.vpc.private_subnets
 
   enable_irsa = true
-
+  enable_cluster_creator_admin_permissions = true
 
   # Endpoint seguro: público + privado; cidrs restringido a ip local.
   cluster_endpoint_public_access       = true
   cluster_endpoint_private_access      = true
   cluster_endpoint_public_access_cidrs = var.allowed_cidrs
 
+  # Add a bootstrap node group so Karpenter controller can start
+  eks_managed_node_groups = {
+    bootstrap = {
+      name            = "bootstrap"
+      use_name_prefix = false
+
+      instance_types = ["t3.medium"]
+
+      min_size     = 1
+      max_size     = 1
+      desired_size = 1
+
+      disk_size = 50
+
+      tags = {
+        "karpenter.sh/do-not-consolidate" = "true"
+      }
+    }
+  }
+
   tags = local.tags
+}
+
+# Espera a que el cluster EKS esté listo antes de crear recursos de Kubernetes
+resource "time_sleep" "wait_eks_active" {
+  create_duration = "90s"
+  depends_on      = [module.eks]
 }
 
 ########################################
@@ -79,80 +105,120 @@ module "karpenter" {
 
 
 ########################################
-# EC2NodeClass (cómo se lanzan los nodos)
+# Karpenter Helm Release
 ########################################
-resource "kubernetes_manifest" "karpenter_nodeclass" {
-  manifest = {
-    apiVersion = "karpenter.k8s.aws/v1beta1"
-    kind       = "EC2NodeClass"
+# Data source para obtener account ID
+data "aws_caller_identity" "current" {}
+
+# Namespace para Karpenter
+resource "kubernetes_namespace" "karpenter" {
+  metadata {
+    name = "karpenter"
+  }
+  depends_on = [time_sleep.wait_eks_active]
+}
+
+########################################
+# Karpenter Provisioner
+########################################
+
+resource "kubectl_manifest" "karpenter_provisioner" {
+  yaml_body = yamlencode({
+    apiVersion = "karpenter.sh/v1alpha5"
+    kind       = "Provisioner"
     metadata   = {
       name = "default"
     }
     spec = {
-      amiFamily = "AL2023"
+      # TTL settings for node cleanup
+      ttlSecondsAfterEmpty = 30
+      ttlSecondsUntilExpired = 604800  # 7 days
 
-      # Subnets privadas por tag (creadas por el módulo VPC)
-      subnetSelectorTerms = [
-        { tags = { "kubernetes.io/role/internal-elb" = "1" } }
+      # AWS-specific configuration
+      providerRef = {
+        name = "default"
+      }
+
+      # Resource limits
+      limits = {
+        resources = {
+          cpu    = "100"
+          memory = "200Gi"
+        }
+      }
+
+      # Consolidation settings
+      consolidation = {
+        enabled = true
+      }
+
+      # Requirements for nodes
+      requirements = [
+        {
+          key = "karpenter.sh/capacity-type"
+          operator = "In"
+          values = ["on-demand"]
+        },
+        {
+          key = "node.kubernetes.io/instance-type"
+          operator = "In"
+          values = ["t3.medium", "t3.large"]
+        },
+        {
+          key = "kubernetes.io/arch"
+          operator = "In"
+          values = ["amd64"]
+        }
       ]
+    }
+  })
 
-      # Security Group del clúster por tag
-      securityGroupSelectorTerms = [
-        { tags = { "kubernetes.io/cluster/${module.eks.cluster_name}" = "owned" } }
-      ]
+  depends_on = [kubernetes_namespace.karpenter]
+}
 
-   
-      role = module.karpenter.node_iam_role_name
+########################################
+# Karpenter AWSNodeTemplate
+########################################
 
-      # Tags EC2 útiles para discovery y gobernanza
+resource "kubectl_manifest" "karpenter_aws_node_template" {
+  yaml_body = yamlencode({
+    apiVersion = "karpenter.k8s.aws/v1alpha1"
+    kind       = "AWSNodeTemplate"
+    metadata   = {
+      name = "default"
+    }
+    spec = {
+      subnetSelector = {
+        "kubernetes.io/role/internal-elb" = "1"
+      }
+      
+      securityGroupSelector = {
+        "kubernetes.io/cluster/${module.eks.cluster_name}" = "owned"
+      }
+
       tags = {
         "karpenter.sh/discovery" = module.eks.cluster_name
       }
-    }
-  }
 
-  depends_on = [module.karpenter]
-}
+      iamInstanceProfile = module.karpenter.node_iam_role_name
 
-
-########################################
-# NodePool (qué nodos + límites + consolidación)
-########################################
-resource "kubernetes_manifest" "karpenter_nodepool" {
-  manifest = {
-    apiVersion = "karpenter.sh/v1beta1"
-    kind       = "NodePool"
-    metadata   = { name = "default" }
-    spec = {
-      template = {
-        metadata = {
-          labels = { "provisioner" = "karpenter" }
-        }
-        spec = {
-          nodeClassRef = {
-            apiVersion = "karpenter.k8s.aws/v1beta1"
-            kind       = "EC2NodeClass"
-            name       = "default"   # << nombre fijo; evita la referencia inexistente
+      blockDeviceMappings = [
+        {
+          deviceName = "/dev/xvda"
+          ebs = {
+            volumeSize = 50
+            volumeType = "gp3"
+            deleteOnTermination = true
           }
-          requirements = [
-            { key = "karpenter.sh/capacity-type", operator = "In", values = ["on-demand"] },
-            { key = "node.kubernetes.io/instance-type", operator = "In", values = ["t3.medium", "m5.large"] }
-          ]
         }
-      }
-
-      # Límite global del pool (evita escalado sin control)
-      limits = { cpu = "200", memory = "400Gi" }
-
-      # Política de consolidación (ahorro de costes)
-      disruption = {
-        consolidationPolicy = "WhenUnderutilized"
-      }
+      ]
     }
-  }
+  })
 
-  depends_on = [kubernetes_manifest.karpenter_nodeclass]
+  depends_on = [kubernetes_namespace.karpenter]
 }
+
+
 
 ########################################
 # RBAC: Roles Admin y Developer
@@ -173,7 +239,7 @@ resource "kubernetes_cluster_role_binding" "admin" {
     name      = "admin-user"  # Simulado
     api_group = ""
   }
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_eks_active]
 }
 
 # Namespace para developer
@@ -181,7 +247,7 @@ resource "kubernetes_namespace" "developer" {
   metadata {
     name = "developer-ns"
   }
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_eks_active]
 }
 
 # Role para Developer (solo lectura en developer-ns)
@@ -226,10 +292,23 @@ resource "kubernetes_namespace" "observability" {
   metadata {
     name = "observability"
   }
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_eks_active]
 }
 
+########################################
+# External Secrets Operator Helm Release
+########################################
+# Namespace para External Secrets
+resource "kubernetes_namespace" "external_secrets" {
+  metadata {
+    name = "external-secrets"
+  }
+  depends_on = [time_sleep.wait_eks_active]
+}
 
+########################################
+# External Secrets Operator
+########################################
 
 # Módulo para Amazon Managed Prometheus
 module "amp" {
@@ -257,7 +336,7 @@ data "aws_prometheus_workspace" "this" {
 
 # IAM Role para Alloy
 resource "aws_iam_role" "alloy_role" {
-  name = "GrafanaAlloyRole-eks-observability"
+  name = "GrafanaAlloyRole-${var.cluster_name}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -319,12 +398,12 @@ resource "kubernetes_namespace" "app" {
   metadata {
     name = "app-demo"
   }
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_eks_active]
 }
 
 # Deployment de la app
-resource "kubernetes_manifest" "app_deployment" {
-  manifest = {
+resource "kubectl_manifest" "app_deployment" {
+  yaml_body = yamlencode({
     apiVersion = "apps/v1"
     kind       = "Deployment"
     metadata = {
@@ -333,6 +412,7 @@ resource "kubernetes_manifest" "app_deployment" {
     }
     spec = {
       replicas = 1
+      progressDeadlineSeconds = 600
       selector = {
         matchLabels = {
           app = "hello-world"
@@ -366,13 +446,13 @@ resource "kubernetes_manifest" "app_deployment" {
         }
       }
     }
-  }
-  depends_on = [kubernetes_namespace.app]
+  })
+  depends_on = [kubernetes_namespace.app, time_sleep.wait_eks_active]
 }
 
 # Service
-resource "kubernetes_manifest" "app_service" {
-  manifest = {
+resource "kubectl_manifest" "app_service" {
+  yaml_body = yamlencode({
     apiVersion = "v1"
     kind       = "Service"
     metadata = {
@@ -392,13 +472,13 @@ resource "kubernetes_manifest" "app_service" {
       ]
       type = "ClusterIP"
     }
-  }
-  depends_on = [kubernetes_manifest.app_deployment]
+  })
+  depends_on = [kubectl_manifest.app_deployment]
 }
 
 # Ingress
-resource "kubernetes_manifest" "app_ingress" {
-  manifest = {
+resource "kubectl_manifest" "app_ingress" {
+  yaml_body = yamlencode({
     apiVersion = "networking.k8s.io/v1"
     kind       = "Ingress"
     metadata = {
@@ -432,15 +512,15 @@ resource "kubernetes_manifest" "app_ingress" {
         }
       ]
     }
-  }
-  depends_on = [kubernetes_manifest.app_service]
+  })
+  depends_on = [kubectl_manifest.app_service]
 }
 
-
-
-# IAM Role para ALB Controller
+########################################
+# ALB Controller IAM Role
+########################################
 resource "aws_iam_role" "alb_controller_role" {
-  name = "ALBControllerRole-eks-observability"
+  name = "ALBControllerRole-${var.cluster_name}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -465,6 +545,45 @@ resource "aws_iam_role" "alb_controller_role" {
     "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess"
   ]
 
+  inline_policy {
+    name = "ALB-EC2-Policy"
+    policy = jsonencode({
+      Version = "2012-10-17"
+      Statement = [
+        {
+          Effect = "Allow"
+          Action = [
+            "ec2:CreateSecurityGroup",
+            "ec2:DeleteSecurityGroup",
+            "ec2:AuthorizeSecurityGroupIngress",
+            "ec2:RevokeSecurityGroupIngress",
+            "ec2:CreateTags"
+          ]
+          Resource = "*"
+        }
+      ]
+    })
+  }
+
+  inline_policy {
+    name = "ALB-WAF-Policy"
+    policy = jsonencode({
+      Version = "2012-10-17"
+      Statement = [
+        {
+          Effect = "Allow"
+          Action = [
+            "wafv2:GetWebACL",
+            "wafv2:GetWebACLForResource",
+            "wafv2:AssociateWebACL",
+            "wafv2:DisassociateWebACL"
+          ]
+          Resource = "*"
+        }
+      ]
+    })
+  }
+
   tags = local.tags
 }
 
@@ -477,9 +596,12 @@ resource "kubernetes_service_account" "alb_sa" {
       "eks.amazonaws.com/role-arn" = aws_iam_role.alb_controller_role.arn
     }
   }
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_eks_active]
 }
-## Secret en AWS Secrets Manager 
+
+########################################
+# Kubernetes Secrets Configuration
+########################################
 data "aws_secretsmanager_secret" "app_secret" {
   name = var.app_secret_name
 }
@@ -509,7 +631,7 @@ resource "kubectl_manifest" "secret_store" {
       }
     }
   })
-  depends_on = [kubernetes_namespace.app]
+  depends_on = [kubernetes_namespace.app, time_sleep.wait_eks_active]
 }
 
 # ExternalSecret
@@ -558,7 +680,7 @@ resource "kubernetes_service_account" "app_sa" {
 
 # IAM Role para la app
 resource "aws_iam_role" "app_role" {
-  name = "AppRole-eks-observability"
+  name = "AppRole-${var.cluster_name}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

@@ -1,4 +1,3 @@
-
 variable "region" {
   type    = string
   default = "us-east-1"
@@ -6,7 +5,7 @@ variable "region" {
 
 variable "cluster_name" {
   type    = string
-  default = "eks-observability"
+  default = "eks-observability-v2"
 }
 
 variable "cluster_version" {

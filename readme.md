@@ -1,12 +1,120 @@
 # Proyecto: Observabilidad en AWS EKS.
 
-10/01/2025/
-Se realiza TF DESTROY para evitar sobrecosto sobre istancias no utilizadas ec2 en aws , se espera redesplegar el 12/01/2025
+**Última actualización:** 12/01/2025
+Se reinicializa el proyecto bajo un nuevo eks  cluster name  eks-observability-v2
+Se optimizan nodos para evitar sobre costo en cuenta aws personal
+Se soluciona problema de compatibilidad en grafanna alloy y se expone por medio de aws prometeus hacia grafana UI.
 
 
-Link app expuesta:
+---
 
-http://k8s-appdemo-hellowor-7d652ffc17-973624858.us-east-1.elb.amazonaws.com
+## 🌐 URLs de Acceso
+
+### Aplicación Hello World
+**URL:** http://k8s-appdemo-hellowor-6ac75a7fca-1457236690.us-east-1.elb.amazonaws.com
+
+### Grafana UI
+**URL:** http://k8s-observab-grafana-536238b7ca-1103291513.us-east-1.elb.amazonaws.com
+
+**Credenciales:**
+- Usuario: `admin`
+- Password: `admin123`
+
+### Amazon Managed Prometheus
+**Workspace ID:** ws-1c2bc642-d761-4c63-a58e-e12da54d36f1  
+**Región:** us-east-1  
+**Endpoint:** https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-1c2bc642-d761-4c63-a58e-e12da54d36f1/
+
+-
+
+### 2. Configurar kubeconfig
+```bash
+aws eks update-kubeconfig --name eks-observability-v2 --region us-east-1
+```
+
+### 3. Desplegar Grafana Alloy
+```bash
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+helm install grafana-alloy grafana/alloy -n observability -f alloy-final-values.yaml
+```
+
+### 4. Desplegar Grafana
+```bash
+helm repo add grafana https://grafana.github.io/charts
+helm install grafana grafana/grafana -n observability -f grafana-values.yaml
+kubectl apply -f grafana-ingress.yaml
+```
+
+### 5. Verificar Despliegue
+```bash
+# Verificar todos los pods
+kubectl get pods -A
+
+# Verificar Ingress
+kubectl get ingress -A
+
+# Verificar logs de Alloy
+kubectl logs -n observability -l app.kubernetes.io/name=alloy -c alloy --tail=50
+```
+Tomado de https://grafana.com/docs/alloy/latest/configure/kubernetes/
+---
+
+## 📊 Información del Cluster
+
+**Nombre:** eks-observability-v2  
+**Versión:** 1.29  
+**Región:** us-east-1  
+**VPC CIDR:** 10.0.0.0/16  
+**Account ID:** 905418343592  
+**OIDC Provider:** FD2B7A8AB4911A4FF83F2933038345AB
+
+**Nodos:**
+- Bootstrap: 1x t3.medium (managed node group)
+- Karpenter: Dinámico (t3.medium, t3.large)
+
+**Componentes Principales:**
+- ✅ AWS Load Balancer Controller (v2.17.1)
+- ✅ Karpenter (v0.37.0)
+- ✅ Grafana Alloy (DaemonSet)
+- ✅ Grafana (Deployment)
+- ✅ Amazon Managed Prometheus
+- ✅ External Secrets Operator
+
+---
+
+## 📝 Notas Importantes
+
+1. **Persistencia de Grafana:** Deshabilitada (sin EBS CSI driver). Los dashboards/configuraciones se pierden al reiniciar el pod.
+2. **Costos:** Recursos desplegados generan costos en AWS (EKS, EC2, NAT Gateway, ALB, AMP).
+3. **Seguridad:** Endpoints públicos restringidos a IP específica (181.53.12.236/32) en `allowed_cidrs`.
+4. **Retención AMP:** 150 días por defecto.
+5. **Karpenter:** Consolida nodos automáticamente si utilización < 50%.
+
+---
+
+## 🔒 Seguridad y RBAC
+
+### Roles configurados:
+- **cluster-admin:** Acceso completo al cluster
+- **developer:** Acceso limitado a namespace `developer-ns` (view, create pods/deployments)
+
+### IAM Roles (IRSA):
+- `KarpenterController-*` — Karpenter node provisioning
+- `ALBControllerRole-*` — ALB/NLB management
+- `GrafanaAlloyRole-*` — AMP remote_write
+- `AppDemoRole-*` — Secrets Manager access
+- `ExternalSecretsRole-*` — Secrets Manager sync
+
+---
+
+## 📚 Referencias tomadas para realizar prueba
+
+- [Amazon EKS Best Practices](https://aws.github.io/aws-eks-best-practices/)
+- [Karpenter Documentation](https://karpenter.sh/)
+- [Grafana Alloy Documentation](https://grafana.com/docs/alloy/)
+- [Amazon Managed Prometheus](https://aws.amazon.com/prometheus/)
+- [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
 
 Guía técnica detallada de despliegue de infraestructura, cluster EKS y componentes de observabilidad en AWS, automatizado con Terraform.
 
@@ -186,52 +294,163 @@ karpenter-675bc46c6d-vmrnm   1/1     Running   0          3m52s
 ## HITO 3: Observabilidad (Grafana Alloy + Amazon Managed Prometheus)
 
 ### Objetivo
-Desplegar Grafana Alloy como agente distribuido (DaemonSet) que recolecta métricas de nodos, kubelet y pods, y envía a Amazon Managed Prometheus (AMP) con autenticación IRSA.
+Implementar stack completo de observabilidad con Grafana Alloy (recolección), Amazon Managed Prometheus (almacenamiento) y Grafana (visualización), permitiendo monitorear el cluster EKS en tiempo real.
+
+### ¿Por qué Amazon Managed Prometheus (AMP)?
+
+**Ventajas de AMP vs Prometheus auto-gestionado:**
+
+1. **Sin Overhead Operacional**
+   - No requiere gestionar servidores, storage, backups ni HA
+   - AWS maneja escalado automático, durabilidad y disponibilidad
+   - Sin preocupaciones por dimensionamiento de disco o retención
+
+2. **Integración Nativa con AWS**
+   - Autenticación SigV4 (sin gestión de tokens o passwords)
+   - IRSA (IAM Roles for Service Accounts) - permisos granulares por pod
+   - Integración con CloudWatch, X-Ray y otros servicios AWS
+
+3. **Costo-Eficiencia**
+   - Pago por uso (ingesta + almacenamiento + queries)
+   - No requiere instancias EC2 dedicadas 24/7 para Prometheus
+   - Retención hasta 150 días sin gestión de storage
+
+4. **Escalabilidad**
+   - Soporta millones de métricas activas sin tunning
+   - Query performance optimizado por AWS
+   - Compatible con PromQL estándar
+
+5. **Seguridad y Compliance**
+   - Cifrado en tránsito y reposo por defecto
+   - VPC endpoints para tráfico privado (opcional)
+   - AWS CloudTrail para auditoría de accesos
 
 ### Integración con AWS
-- **Amazon Managed Prometheus (AMP):** Workspace dedicado en AMP (creado fuera o en Terraform).
-  - Endpoint: `https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-5a054a55-37fc-4b35-b352-6694ec3aed77/api/v1/remote_write`
+- **Amazon Managed Prometheus (AMP):** Workspace dedicado para el cluster.
+  - **Workspace ID:** `ws-1c2bc642-d761-4c63-a58e-e12da54d36f1`
+  - **Endpoint:** `https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-1c2bc642-d761-4c63-a58e-e12da54d36f1/`
+  - **Remote Write:** `https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-1c2bc642-d761-4c63-a58e-e12da54d36f1/api/v1/remote_write`
   - Autenticación: SigV4 (firma con credenciales AWS temporales).
+  - Estado: `ACTIVE`
+  - Región: `us-east-1`
+  
 - **IAM Role (IRSA):** Rol específico para Alloy con permiso `aps:RemoteWrite` al workspace AMP.
-- **VPC Endpoints (opcional):** Si se requiere egress privado a AMP, usar VPC endpoint.
+  - **Rol:** `GrafanaAlloyRole-eks-observability-v2`
+  - **Policy:** `AMPWritePolicy` (inline) con permisos `aps:RemoteWrite`
+  - **Trust Policy:** Confía en OIDC provider del cluster con condición `system:serviceaccount:observability:grafana-alloy`
+
+- **IAM Role para Grafana:** Rol para consultar métricas de AMP (lectura).
+  - **Autenticación:** SigV4 automática vía AWS SDK en datasource
 
 ### Integración con EKS
 - **Namespace:** `observability` (creado por Terraform/Helm).
-- **ServiceAccount:** `grafana-alloy` anotado con `eks.amazonaws.com/role-arn: arn:aws:iam::...role/AlloyRole`.
+
+#### Grafana Alloy (Recolección de Métricas)
+
+- **ServiceAccount:** `grafana-alloy` anotado con `eks.amazonaws.com/role-arn` para IRSA.
 - **DaemonSet:** `grafana-alloy` — 1 pod por nodo, recolecta métricas locales.
-- **Deployment:** `kube-state-metrics` (1 replica) — Exporta estado de objetos K8s.
-- **Deployment:** `prometheus-node-exporter` (opcional, si no se usa en Alloy).
+  - **Imagen:** `grafana/alloy:latest`
+  - **Configuración:** Scraping de kubelet, cAdvisor, kube-apiserver y pods anotados
+  - **Remote Write:** Envía métricas a AMP con SigV4
+  - **Clustering:** Habilitado para evitar duplicados en scraping de targets centrales
+
+**Configuración de Alloy (alloy-final-values.yaml):**
+- **Scrape Jobs:**
+  1. `kubelet` — Métricas de runtime de contenedores
+  2. `cadvisor` — Métricas de uso de CPU/memoria/red por contenedor
+  3. `kube_apiserver` — Métricas del API server (request rate, latency)
+  4. `kubernetes_pods` — Pods con annotation `prometheus.io/scrape=true`
+
+- **Discovery:** `discovery.kubernetes` para auto-descubrimiento de nodos/endpoints/pods
+- **Authentication:** SigV4 con región `us-east-1` en remote_write
+- **Queue Config:** `max_shards=200`, `capacity=10000` para buffering
+
+#### Grafana (Visualización)
+
+- **Deployment:** `grafana` (1 replica) — UI web para consultar y visualizar métricas
+  - **Imagen:** `grafana/grafana:latest`
+  - **Credenciales:** 
+    - Usuario: `admin`
+    - Password: `admin123`
+  - **Datasource:** Amazon Managed Prometheus pre-configurado con SigV4
+  - **Persistencia:** Deshabilitada (sin EBS CSI driver instalado)
+
+- **Service:** ClusterIP (interno)
+- **Ingress:** ALB Ingress para acceso público
+  - **URL:** http://k8s-observab-grafana-536238b7ca-1103291513.us-east-1.elb.amazonaws.com
+  - **Health Check:** `/api/health`
+  - **Esquema:** internet-facing
+  - **Target Type:** IP (apunta directamente a pods)
 
 ### Despliegue con Terraform
 - **Módulo:** `terraform/modules/observability` (o integrado en `main.tf`).
 - **Ubicación:** `terraform/main.tf` o `terraform/observability.tf`.
 - **Recursos clave:**
-  - `aws_iam_role` — Rol AlloyRole para IRSA.
-  - `aws_iam_role_policy` — Permisos `aps:RemoteWrite`.
-  - `helm_release` — Chart Grafana Alloy (repo `https://grafana.github.io/helm-charts`).
-  - `kubernetes_namespace` — Namespace `observability`.
-  - `kubernetes_config_map` — ConfigMap `alloy-config` con scrape config y remote_write.
+  - `module.prometheus` — Terraform module para crear AMP workspace
+  - `data.aws_prometheus_workspace` — Data source para obtener detalles del workspace
+  - `aws_iam_role.grafana_alloy` — Rol IRSA para Alloy
+  - `aws_iam_role_policy.amp_write` — Policy inline con `aps:RemoteWrite`
+  - `kubernetes_service_account.grafana_alloy` — ServiceAccount anotado con role ARN
+  - `kubernetes_namespace.observability` — Namespace dedicado
+
+**Nota:** Alloy y Grafana se despliegan manualmente via Helm debido a limitaciones del provider Kubernetes con configuración compleja:
+
+```bash
+# Despliegue de Grafana Alloy
+helm install grafana-alloy grafana/alloy -n observability \
+  -f terraform/alloy-final-values.yaml
+
+# Despliegue de Grafana
+helm install grafana grafana/grafana -n observability \
+  -f terraform/grafana-values.yaml
+
+# Aplicar Ingress de Grafana
+kubectl apply -f terraform/grafana-ingress.yaml
+```
 
 ### Componentes en el Cluster (resultado del Hito 3)
 **Namespace:** `observability`.
 
 **Pods:**
-PS C:\Users\cpuo\Observability_test\terraform> kubectl get pods -n observability
-NAME                  READY   STATUS    RESTARTS   AGE
-grafana-alloy-7h597   2/2     Running   0          3h42m
-grafana-alloy-gmhl7   2/2     Running   0          3h42m
-PS C:\Users\cpuo\Observability_test\terraform> 
+```
+NAME                       READY   STATUS    RESTARTS   AGE
+grafana-alloy-2z7rf        2/2     Running   0          4h
+grafana-alloy-xxxxx        2/2     Running   0          4h
+grafana-6945894fdd-qhh9d   1/1     Running   0          15m
+```
 
-- `grafana-alloy` DaemonSet (N replicas, 1 por nodo) — Recolector de métricas.
-- `kube-state-metrics` Deployment (1 replica) — Estado de K8s.
-- `prometheus-node-exporter` DaemonSet (N replicas, opcional) — Métricas de nodos.
+- **grafana-alloy** DaemonSet (N replicas, 1 por nodo) — Recolector de métricas
+  - Container 1: `alloy` — Agente principal
+  - Container 2: `config-reloader` — Recarga configuración automática
+- **grafana** Deployment (1 replica) — UI de visualización
 
-**ConfigMaps:**
-- `alloy-config` — Configuración de scraping y remote_write.
+**Services:**
+- `grafana` (ClusterIP) — Acceso interno al UI
+
+**Ingress:**
+- `grafana` (ALB) — Acceso público al UI
 
 **Integración AWS:**
-- Alloy asume rol IAM vía IRSA y firma requests a AMP con SigV4.
-- Métricas se almacenan en AMP workspace (consulta con Grafana Cloud o CLI de AMP).
+1. Alloy asume rol `GrafanaAlloyRole-eks-observability-v2` vía IRSA
+2. Firma requests HTTP a AMP con SigV4 (credenciales temporales)
+3. Envía métricas cada 15s a remote_write endpoint
+4. AMP almacena métricas con retención de 150 días
+5. Grafana consulta AMP usando SigV4 (autenticación automática con AWS SDK)
+
+### Acceso a Grafana
+
+**URL:** http://k8s-observab-grafana-536238b7ca-1103291513.us-east-1.elb.amazonaws.com
+
+**Credenciales:**
+- Usuario: `admin`
+- Password: `admin123`
+
+**Datasource Pre-configurado:**
+- Nombre: `Amazon Managed Prometheus`
+- Tipo: `Prometheus`
+- URL: `https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-1c2bc642-d761-4c63-a58e-e12da54d36f1`
+- Autenticación: SigV4 (región: us-east-1)
+- Estado: Activo
 
 
 ## HITO 4: Aplicación Demo & Networking (ALB + Ingress)

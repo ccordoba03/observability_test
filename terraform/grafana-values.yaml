@@ -1,0 +1,22 @@
+adminPassword: admin123
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+    - name: Amazon Managed Prometheus
+      type: prometheus
+      access: proxy
+      url: https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-1c2bc642-d761-4c63-a58e-e12da54d36f1
+      isDefault: true
+      jsonData:
+        httpMethod: POST
+        sigV4Auth: true
+        sigV4AuthType: default
+        sigV4Region: us-east-1
+
+service:
+  type: LoadBalancer
+
+persistence:
+  enabled: false

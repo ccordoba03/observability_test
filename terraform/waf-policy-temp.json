@@ -1,1 +1,0 @@
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["wafv2:GetWebACL","wafv2:GetWebACLForResource","wafv2:AssociateWebACL","wafv2:DisassociateWebACL"],"Resource":"*"}]}

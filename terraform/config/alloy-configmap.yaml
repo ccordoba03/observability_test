@@ -3,19 +3,139 @@ kind: ConfigMap
 metadata:
   name: grafana-alloy
   namespace: observability
+  labels:
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: grafana-alloy
+    meta.helm.sh/release-namespace: observability
 data:
   config.alloy: |
-    prometheus.scrape "kubernetes" {
-      targets = discovery.kubernetes.pods.targets
-      forward_to = [prometheus.remote_write.default.receiver]
+    logging {
+      level = "info"
+    }
+
+    discovery.kubernetes "nodes" {
+      role = "node"
+    }
+
+    discovery.kubernetes "services" {
+      role = "service"
+    }
+
+    discovery.kubernetes "endpoints" {
+      role = "endpoints"
     }
 
     discovery.kubernetes "pods" {
       role = "pod"
     }
 
-    prometheus.remote_write "default" {
+    // Scrape kubelet metrics
+    prometheus.scrape "kubelet" {
+      targets    = discovery.kubernetes.nodes.targets
+      forward_to = [prometheus.remote_write.amp.receiver]
+      job_name   = "kubelet"
+
+      scheme = "https"
+      tls_config {
+        insecure_skip_verify = true
+      }
+      bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+      relabel_configs {
+        source_labels = ["__meta_kubernetes_node_name"]
+        target_label  = "node"
+      }
+    }
+
+    // Scrape API server
+    prometheus.scrape "kube_apiserver" {
+      targets    = discovery.kubernetes.endpoints.targets
+      forward_to = [prometheus.remote_write.amp.receiver]
+      job_name   = "kubernetes-apiservers"
+
+      scheme = "https"
+      tls_config {
+        insecure_skip_verify = true
+      }
+      bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+      relabel_configs {
+        source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_service_name", "__meta_kubernetes_endpoint_port_name"]
+        regex         = "default;kubernetes;https"
+        action        = "keep"
+      }
+    }
+
+    // Scrape pods with prometheus.io/scrape annotation
+    prometheus.scrape "kubernetes_pods" {
+      targets    = discovery.kubernetes.pods.targets
+      forward_to = [prometheus.remote_write.amp.receiver]
+      job_name   = "kubernetes-pods"
+
+      relabel_configs {
+        source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
+        regex         = "true"
+        action        = "keep"
+      }
+      relabel_configs {
+        source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_path"]
+        target_label  = "__metrics_path__"
+        regex         = "(.+)"
+      }
+      relabel_configs {
+        source_labels = ["__address__", "__meta_kubernetes_pod_annotation_prometheus_io_port"]
+        regex         = "([^:]+)(?::\\d+)?;(\\d+)"
+        replacement   = "$1:$2"
+        target_label  = "__address__"
+      }
+      relabel_configs {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      relabel_configs {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+    }
+
+    // Scrape metrics from nodes (cAdvisor)
+    prometheus.scrape "cadvisor" {
+      targets    = discovery.kubernetes.nodes.targets
+      forward_to = [prometheus.remote_write.amp.receiver]
+      job_name   = "kubernetes-nodes-cadvisor"
+
+      scheme = "https"
+      tls_config {
+        insecure_skip_verify = true
+      }
+      bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      metrics_path      = "/metrics/cadvisor"
+
+      relabel_configs {
+        source_labels = ["__meta_kubernetes_node_name"]
+        target_label  = "node"
+      }
+    }
+
+    // Send metrics to Amazon Managed Prometheus
+    prometheus.remote_write "amp" {
       endpoint {
-        url = "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-5a054a55-37fc-4b35-b352-6694ec3aed77/api/v1/remote_write"
+        url = "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-1c2bc642-d761-4c63-a58e-e12da54d36f1/api/v1/remote_write"
+
+        queue_config {
+          max_shards           = 200
+          min_shards           = 1
+          max_samples_per_send = 1000
+          batch_send_wait      = 5s
+          min_backoff          = 30ms
+          max_backoff          = 100ms
+        }
+
+        write_relabel_configs {
+          source_labels = ["__name__"]
+          regex         = "up|container_.*|node_.*|kubelet_.*|kube_.*|cadvisor_.*"
+          action        = "keep"
+        }
       }
     }

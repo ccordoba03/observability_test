@@ -3,7 +3,7 @@
 **Última actualización:** 12/01/2025
 Se reinicializa el proyecto bajo un nuevo eks  cluster name  eks-observability-v2
 Se optimizan nodos para evitar sobre costo en cuenta aws personal
-Se soluciona problema de compatibilidad en grafanna alloy y se expone por medio de aws prometeus hacia grafana UI.
+Se soluciona problema de compatibilidad en grafanna alloy y se expone por medio de aws prometeus hacia grafana UI por medio de ingress.
 
 
 ---

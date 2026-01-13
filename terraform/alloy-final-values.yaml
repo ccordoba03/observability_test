@@ -1,0 +1,120 @@
+serviceAccount:
+  create: false
+  name: grafana-alloy
+
+controller:
+  type: daemonset
+
+alloy:
+  configMap:
+    content: |-
+      logging {
+        level = "info"
+      }
+
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      discovery.kubernetes "services" {
+        role = "service"
+      }
+
+      discovery.kubernetes "endpoints" {
+        role = "endpoints"
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // Scrape kubelet metrics
+      prometheus.scrape "kubelet" {
+        targets    = discovery.kubernetes.nodes.targets
+        forward_to = [prometheus.remote_write.amp.receiver]
+        job_name   = "kubelet"
+
+        scheme = "https"
+        tls_config {
+          insecure_skip_verify = true
+        }
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+        clustering {
+          enabled = true
+        }
+      }
+
+      // Scrape API server
+      prometheus.scrape "kube_apiserver" {
+        targets    = discovery.kubernetes.endpoints.targets
+        forward_to = [prometheus.remote_write.amp.receiver]
+        job_name   = "kubernetes-apiservers"
+
+        scheme = "https"
+        tls_config {
+          insecure_skip_verify = true
+        }
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+        clustering {
+          enabled = true
+        }
+      }
+
+      // Scrape pods with prometheus.io/scrape annotation
+      prometheus.scrape "kubernetes_pods" {
+        targets    = discovery.kubernetes.pods.targets
+        forward_to = [prometheus.remote_write.amp.receiver]
+        job_name   = "kubernetes-pods"
+
+        clustering {
+          enabled = true
+        }
+      }
+
+      // Scrape metrics from nodes (cAdvisor)
+      prometheus.scrape "cadvisor" {
+        targets    = discovery.kubernetes.nodes.targets
+        forward_to = [prometheus.remote_write.amp.receiver]
+        job_name   = "kubernetes-nodes-cadvisor"
+
+        scheme = "https"
+        tls_config {
+          insecure_skip_verify = true
+        }
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        metrics_path      = "/metrics/cadvisor"
+
+        clustering {
+          enabled = true
+        }
+      }
+
+      // Send metrics to Amazon Managed Prometheus
+      prometheus.remote_write "amp" {
+        endpoint {
+          url = "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-1c2bc642-d761-4c63-a58e-e12da54d36f1/api/v1/remote_write"
+
+          sigv4 {
+            region = "us-east-1"
+          }
+
+          queue_config {
+            max_shards           = 200
+            min_shards           = 1
+            max_samples_per_send = 1000
+            batch_send_deadline  = "5s"
+            min_backoff          = "30ms"
+            max_backoff          = "100ms"
+          }
+        }
+      }
+
+rbac:
+  create: true
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "12345"
+  prometheus.io/path: "/metrics"

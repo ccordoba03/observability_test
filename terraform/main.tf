@@ -23,7 +23,7 @@ module "vpc" {
   private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
   public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 
-  enable_nat_gateway = true
+  enable_nat_gateway = true #conexión a internet para nodos privados
   single_nat_gateway = true
 
   # Tags necesarias para auto-discovery del AWS Load Balancer Controller
@@ -58,7 +58,7 @@ module "eks" {
   cluster_endpoint_private_access      = true
   cluster_endpoint_public_access_cidrs = var.allowed_cidrs
 
-  # Add a bootstrap node group so Karpenter controller can start
+  # SOLUCION DE BUG SOBRE TF INIT PARA MODULOS DE KARPENTER , NECESITA NODOS PARA PODER INICIALIZAR
   eks_managed_node_groups = {
     bootstrap = {
       name            = "bootstrap"
@@ -95,7 +95,7 @@ module "karpenter" {
   version = "~> 20.34"
 
   cluster_name = module.eks.cluster_name
-
+#politica de definicion de  usando conex hacia aws system manager
   node_iam_role_additional_policies = {
     AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   }
@@ -103,12 +103,6 @@ module "karpenter" {
   tags = local.tags
 }
 
-
-########################################
-# Karpenter Helm Release
-########################################
-# Data source para obtener account ID
-data "aws_caller_identity" "current" {}
 
 # Namespace para Karpenter
 resource "kubernetes_namespace" "karpenter" {
@@ -130,7 +124,7 @@ resource "kubectl_manifest" "karpenter_provisioner" {
       name = "default"
     }
     spec = {
-      # TTL settings for node cleanup
+      # TTL settings for node cleanup when nodes are empty or expired
       ttlSecondsAfterEmpty = 30
       ttlSecondsUntilExpired = 604800  # 7 days
 
@@ -140,6 +134,7 @@ resource "kubectl_manifest" "karpenter_provisioner" {
       }
 
       # Resource limits
+
       limits = {
         resources = {
           cpu    = "100"
@@ -147,7 +142,7 @@ resource "kubectl_manifest" "karpenter_provisioner" {
         }
       }
 
-      # Consolidation settings
+      # Consolidation settings bin packding and dowzising of nodes
       consolidation = {
         enabled = true
       }
@@ -201,7 +196,7 @@ resource "kubectl_manifest" "karpenter_aws_node_template" {
       }
 
       iamInstanceProfile = module.karpenter.node_iam_role_name
-
+#CONFIGURACION DE VOLUMENES PARA NODOS KARPENTER /DICOS EBS GP3 DE 50GB
       blockDeviceMappings = [
         {
           deviceName = "/dev/xvda"
@@ -264,7 +259,7 @@ resource "kubernetes_role" "developer" {
   depends_on = [kubernetes_namespace.developer]
 }
 
-# RoleBinding para Developer
+# RoleBinding para Developer // DENTRO DENAMESPACE DEVELOPER_Ns PUEDE VER RECURSOS
 resource "kubernetes_role_binding" "developer" {
   metadata {
     name      = "developer-binding"
@@ -286,7 +281,7 @@ resource "kubernetes_role_binding" "developer" {
 ########################################
 # Grafana Alloy para Observabilidad
 ########################################
-
+#grafana y grafana allloy instalados via helm en el clúster EKS ,usando comandos helm 
 # Namespace para observabilidad
 resource "kubernetes_namespace" "observability" {
   metadata {
@@ -296,25 +291,15 @@ resource "kubernetes_namespace" "observability" {
 }
 
 ########################################
-# External Secrets Operator Helm Release
-########################################
-# Namespace para External Secrets
-resource "kubernetes_namespace" "external_secrets" {
-  metadata {
-    name = "external-secrets"
-  }
-  depends_on = [time_sleep.wait_eks_active]
-}
-
-########################################
-# External Secrets Operator
+# Amazon Managed Prometheus (AMP)
 ########################################
 
 # Módulo para Amazon Managed Prometheus
 module "amp" {
   source  = "terraform-aws-modules/managed-service-prometheus/aws"
   version = "~> 1.0"
-
+#configuracion del workspace de amp , para lectura de metricas desde grafana alloy
+#remote_write habilitado
   workspace_alias = "eks-observability-amp"
   alert_manager_definition = <<EOF
 alertmanager_config: |
@@ -325,16 +310,12 @@ alertmanager_config: |
     repeat_interval: 1h
     receiver: 'null'
   receivers:
-  - name: 'null'
+  - name: 'null' 
 EOF
 }
 
-# Data source para obtener el endpoint de AMP
-data "aws_prometheus_workspace" "this" {
-  workspace_id = module.amp.workspace_id
-}
 
-# IAM Role para Alloy
+# IAM Role para Alloy,  (IAM Roles for Service Accounts /IRSA) 
 resource "aws_iam_role" "alloy_role" {
   name = "GrafanaAlloyRole-${var.cluster_name}"
   assume_role_policy = jsonencode({
@@ -387,153 +368,6 @@ resource "kubernetes_service_account" "alloy_sa" {
     }
   }
   depends_on = [kubernetes_namespace.observability]
-}
-
-########################################
-# Grafana Alloy Helm Release
-########################################
-resource "helm_release" "grafana_alloy" {
-  name       = "grafana-alloy"
-  repository = "https://grafana.github.io/helm-charts"
-  chart      = "alloy"
-  namespace  = kubernetes_namespace.observability.metadata[0].name
-  version    = "0.3.2"
-
-  values = [
-    yamlencode({
-      serviceAccount = {
-        create = false
-        name   = kubernetes_service_account.alloy_sa.metadata[0].name
-      }
-
-      config = {
-        logs = {
-          level = "info"
-        }
-        metrics = {
-          wal_directory = "/tmp/alloy"
-        }
-        server = {
-          http_listen_port = 12345
-        }
-      }
-
-      alloy = <<-EOH
-        logging {
-          level = "info"
-        }
-
-        discovery.kubernetes "nodes" {
-          role = "node"
-        }
-
-        discovery.kubernetes "services" {
-          role = "service"
-        }
-
-        discovery.kubernetes "endpoints" {
-          role = "endpoints"
-        }
-
-        discovery.kubernetes "pods" {
-          role = "pod"
-        }
-
-        // Scrape kubelet metrics
-        prometheus.scrape "kubelet" {
-          targets    = discovery.kubernetes.nodes.targets
-          forward_to = [prometheus.remote_write.amp.receiver]
-          job_name   = "kubelet"
-
-          scheme = "https"
-          tls_config {
-            insecure_skip_verify = true
-          }
-          bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-          relabel_configs {
-            source_labels = ["__meta_kubernetes_node_name"]
-            target_label  = "node"
-          }
-        }
-
-        // Scrape API server
-        prometheus.scrape "kube_apiserver" {
-          targets    = discovery.kubernetes.endpoints.targets
-          forward_to = [prometheus.remote_write.amp.receiver]
-          job_name   = "kubernetes-apiservers"
-
-          scheme = "https"
-          tls_config {
-            insecure_skip_verify = true
-          }
-          bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-          relabel_configs {
-            source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_service_name", "__meta_kubernetes_endpoint_port_name"]
-            regex         = "default;kubernetes;https"
-            action        = "keep"
-          }
-        }
-
-        // Scrape pods with prometheus.io/scrape annotation
-        prometheus.scrape "kubernetes_pods" {
-          targets    = discovery.kubernetes.pods.targets
-          forward_to = [prometheus.remote_write.amp.receiver]
-          job_name   = "kubernetes-pods"
-
-          relabel_configs {
-            source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
-            regex         = "true"
-            action        = "keep"
-          }
-          relabel_configs {
-            source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_path"]
-            target_label  = "__metrics_path__"
-            regex         = "(.+)"
-          }
-          relabel_configs {
-            source_labels = ["__address__", "__meta_kubernetes_pod_annotation_prometheus_io_port"]
-            regex         = "([^:]+)(?::\\d+)?;(\\d+)"
-            replacement   = "$1:$2"
-            target_label  = "__address__"
-          }
-          relabel_configs {
-            source_labels = ["__meta_kubernetes_namespace"]
-            target_label  = "namespace"
-          }
-          relabel_configs {
-            source_labels = ["__meta_kubernetes_pod_name"]
-            target_label  = "pod"
-          }
-        }
-
-        // Send metrics to Amazon Managed Prometheus
-        prometheus.remote_write "amp" {
-          endpoint {
-            url = "https://${data.aws_prometheus_workspace.this.prometheus_endpoint}api/v1/remote_write"
-
-            queue_config {
-              max_shards      = 200
-              min_shards      = 1
-              max_samples_per_send = 1000
-              batch_send_wait = 5s
-              min_backoff     = 30ms
-              max_backoff     = 100ms
-            }
-
-            write_relabel_configs {
-              source_labels = ["__name__"]
-              regex         = "up|container_.*|node_.*|kubelet_.*|kube_.*"
-              action        = "keep"
-            }
-          }
-        }
-      EOH
-    })
-  ]
-
-  depends_on = [kubernetes_service_account.alloy_sa, module.amp]
 }
 
 ########################################
@@ -597,7 +431,8 @@ resource "kubectl_manifest" "app_deployment" {
   depends_on = [kubernetes_namespace.app, time_sleep.wait_eks_active]
 }
 
-# Service
+# Service // stable persistent internal IP para la app
+
 resource "kubectl_manifest" "app_service" {
   yaml_body = yamlencode({
     apiVersion = "v1"
@@ -632,6 +467,7 @@ resource "kubectl_manifest" "app_ingress" {
       name      = "hello-world"
       namespace = kubernetes_namespace.app.metadata[0].name
       annotations = {
+        # Anotaciones para AWS ALB Ingress Controller aplicationload balancer
         "kubernetes.io/ingress.class" = "alb"
         "alb.ingress.kubernetes.io/scheme" = "internet-facing"
         "alb.ingress.kubernetes.io/target-type" = "ip"
@@ -662,10 +498,12 @@ resource "kubectl_manifest" "app_ingress" {
   })
   depends_on = [kubectl_manifest.app_service]
 }
-
+# OIDC = OpenID Connect (estándar de autenticación abierto)
 ########################################
 # ALB Controller IAM Role
 ########################################
+
+# a partir de la creacion del ingres de la app, se implementa un alb para exponer la app demo
 resource "aws_iam_role" "alb_controller_role" {
   name = "ALBControllerRole-${var.cluster_name}"
 
